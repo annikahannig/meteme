@@ -22,15 +22,42 @@ from rest_framework.response import Response
 from mete.models import Account, Transaction, Barcode
 from store.models import Product, Category
 
+from sessionlock import models as sessionlock_models
+
 from api import serializers, utils
-from api.serializers import SessionSerializer, UserSerializer, \
+from api.serializers import SessionSerializer, LockedSessionSerializer, \
+                            UserSerializer, \
                             AuthenticationSerializer, \
                             AccountSerializer, DepositSerializer, \
                             PurchaseSerializer, TransferSerializer
 
+
 from backend.settings import BACKEND_VERSION
 
-from pprint import pprint
+def _get_client_ip(request):
+    """Get the client ip address"""
+    # This is relevant if we are behind a proxy
+    addr = request.META.get('HTTP_X_FORWARDED_FOR')
+    if addr:
+        return addr.split(',')[0]
+    # Just use remote addr
+    return request.META.get('REMOTE_ADDR')
+
+
+def _get_session_lock(request):
+    """Get the session lock for a session"""
+    try:
+        key = request.session.session_key
+        return sessionlock_models.Lock.objects.get(session_id=key)
+    except:
+        return sessionlock_models.Lock()
+
+
+def _is_session_active(request):
+    """Helper for checking if a session was activated"""
+    lock = _get_session_lock(request)
+    return lock.session_active
+
 
 class SessionViewSet(GenericViewSet):
     """ Login / Logout user """
@@ -44,19 +71,25 @@ class SessionViewSet(GenericViewSet):
 
         session = {
             'is_authenticated': authenticated,
+            'is_active': _is_session_active(self.request),
             'user': self.request.user,
         }
         return session
 
 
     def list(self, request):
-        """ Render session """
-        serialized_session = SessionSerializer(self.session)
+        """Render session"""
+        # Check if session is activated
+        serializer = LockedSessionSerializer
+        if _is_session_active(self.request):
+            serializer = SessionSerializer
+
+        serialized_session = serializer(self.session)
         return Response(serialized_session.data)
 
 
     def create(self, request):
-        """ Create a session with credentials """
+        """Create a session with credentials"""
         serializer = AuthenticationSerializer(data=request.data)
 
         if not serializer.is_valid():
@@ -68,7 +101,17 @@ class SessionViewSet(GenericViewSet):
         # Credentials are valid, let's login the user
         login(request, serializer.validated_data['user'])
 
-        serialized_session = SessionSerializer(self.session)
+        # Prepare sessionlock
+        lock = sessionlock_models.Lock(
+            session_id=self.request.session.session_key,
+            user_agent=self.request.META.get('HTTP_USER_AGENT', ''),
+            client_identifier=serializer.validated_data['client_identifier'],
+            client_ip=_get_client_ip(self.request),
+        )
+
+        lock.save()
+
+        serialized_session = LockedSessionSerializer(self.session)
         return Response(serialized_session.data)
 
 

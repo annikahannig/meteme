@@ -1,4 +1,3 @@
-from django.contrib.auth import authenticate
 from rest_framework.serializers import Serializer, ModelSerializer, \
                                        Field, ImageField, BooleanField, \
                                        IntegerField, CharField, EmailField,\
@@ -126,7 +125,7 @@ class PurchaseSerializer(Serializer):
         and create transaction.
         """
 
-        # Assert user is not locked 
+        # Assert user is not locked
         UserAccountNotLocked()(user)
 
         account = user.account
@@ -238,35 +237,60 @@ class TransferSerializer(Serializer):
 #
 # == Session / Login
 #
+class LockedSessionUserSerializer(ModelSerializer):
+    """Serialize only some of the fields"""
+
+    class Meta:
+        model = auth_models.User
+        fields = ['id', 'username', 'first_name', 'last_name']
+
 
 class SessionSerializer(Serializer):
     """ Serialize a user session """
     user = UserSerializer()
     is_authenticated = ReadOnlyField()
+    is_active = ReadOnlyField()
+
+
+class LockedSessionSerializer(Serializer):
+    """Serialize a not (yet) activated session"""
+    user = LockedSessionUserSerializer()
+    is_authenticated = ReadOnlyField()
+    is_active = ReadOnlyField()
+
 
 
 class AuthenticationSerializer(Serializer):
-    """ Authentication requires credentials """
-    username = CharField()
-    password = CharField(style={'input_type': 'password'})
+    """
+    Passwordless user authentication:
+    Just expect a valid username.
 
+    The session itself needs to be activated by a
+    staff member in the admin backend.
+    """
+    username = CharField(required=True)
+    client_identifier = CharField(required=True)
 
     def validate(self, data):
         """ Validate credentials """
-        user = authenticate(username=data['username'],
-                            password=data['password'])
+        user = auth_models.User.objects\
+            .filter(username=data['username'])\
+            .first()
 
         if not user:
             raise ValidationError('Invalid credentials')
 
-        data['user'] = user
+        # Set authentication backend to default ModelBackend
+        user.backend = 'django.contrib.auth.backends.ModelBackend'
 
+        data['user'] = user
         return data
+
+
 
 #
 # == Stats Serializers
 #
-
 class StatsDonationsSerializer(Serializer):
     """ Serialize Donation Amounts """
     total = MoneyField()
